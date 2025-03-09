@@ -277,6 +277,7 @@ elif menu == "Recommendations":
                 for it in outfit["items"]:
                     st.write(f"- **{it['item']}**: {it['name']} | Price: {it['price']}")
                     st.markdown(f"[Buy Now]({it['link']})")
+                    # Add "Add to Cart" button for each item
                     if st.button(f"Add {it['name']} to Cart", key=f"{outfit['set_name']}_{it['item']}"):
                         add_to_cart({
                             "name": it["name"],
@@ -285,7 +286,7 @@ elif menu == "Recommendations":
                         })
                 st.markdown("---")
             if st.button("Save All Selections"):
-                user_id = "user_1"
+                user_id = "user_1"  # Replace with proper authentication in production
                 save_selection(user_id, sets)
                 st.success("Selections saved!")
 
@@ -305,8 +306,8 @@ elif menu == "Show document.json":
     try:
         with open("document.json", "r") as f:
             data = json.load(f)
-        # Use exact category keys that were used during extraction
-        categories_to_show = ["Apparel", "Coat", "Shoes", "Tie"]
+        # Directly iterate over the fixed categories we expect
+        categories_to_show = ["apparel", "women coats", "women shoes", "women tie"]
         for cat in categories_to_show:
             st.subheader(f"Category: {cat}")
             if cat in data:
