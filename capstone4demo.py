@@ -1,27 +1,24 @@
-
-import sys
-import asyncio
-if sys.platform == "win32":
-    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
-
 import os
 import streamlit as st
 import json
 import sqlite3
 from PIL import Image
-#from dotenv import load_dotenv
-import torch
 from typing import List, Optional
+import torch
 
-# Instead of loading .env, read secrets from st.secrets
+# Read secrets from Streamlit Cloud's secrets management.
 SERPER_API_KEY = st.secrets["SERPER_API_KEY"]
 OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
 FIRECRAWL_API_KEY = st.secrets["FIRECRAWL_API_KEY"]
+
+os.environ["SERPER_API_KEY"] = SERPER_API_KEY
+os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
+
 # -----------------------------------------------------------------------------
 # Initialize Firecrawl
 # -----------------------------------------------------------------------------
 from firecrawl import FirecrawlApp
-#firecrawl_app = FirecrawlApp(api_key=firecrawl_key)
+firecrawl_app = FirecrawlApp(api_key=FIRECRAWL_API_KEY)
 
 # -----------------------------------------------------------------------------
 # CLIP-based Image Analysis
@@ -97,18 +94,17 @@ def collect_preferences():
     return specific_pref, budget
 
 # -----------------------------------------------------------------------------
-# Firecrawl-based Product Extraction using Firecrawl Scrape Endpoint
+# Firecrawl-based Product Extraction
 # -----------------------------------------------------------------------------
 def get_products(category: str, style: str) -> List[dict]:
     """
     Use Firecrawl's scrape endpoint to extract product information for a given category.
     Constructs a Google Shopping URL using the category and style, and sends a scrape request.
     Returns up to 3 product dictionaries with only name, price, and URL.
-    Also appends the raw JSON response to 'document.json' in an aggregated structure.
+    Also merges the raw JSON response into 'document.json' in an aggregated structure.
     """
     base_url = "https://www.google.com/search"
     query = f"{category} {style}"
-    # 'tbm=shop' requests Google Shopping results
     search_url = f"{base_url}?q={query.replace(' ', '+')}&tbm=shop"
     
     from pydantic import BaseModel
@@ -130,7 +126,7 @@ def get_products(category: str, style: str) -> List[dict]:
             'prompt': prompt,
             'schema': ExtractSchema.model_json_schema()
         })
-        # Load existing aggregated data if any
+        # Merge new data into aggregated JSON file
         aggregated_data = {}
         if os.path.exists("document.json"):
             try:
@@ -138,13 +134,12 @@ def get_products(category: str, style: str) -> List[dict]:
                     aggregated_data = json.load(rf)
             except Exception:
                 aggregated_data = {}
-        # Save category-specific data
         aggregated_data[category] = data
         with open("document.json", "w") as wf:
             json.dump(aggregated_data, wf, indent=2)
             
         products = data.get("products", [])
-        print(f"Category: {category}, Style: {style} - Extracted {len(products)} products.")
+        st.write(f"Fetched {len(products)} products for '{category}'.")
         return products[:3]
     except Exception as e:
         st.error(f"Error extracting products for {category}: {e}")
@@ -156,6 +151,7 @@ def search_products_simple(scanned_style, preference, budget):
     to extract up to 3 product recommendations. Then, construct complete wardrobe sets by combining
     the i-th product from each category. Returns a list of complete wardrobe sets.
     """
+    # Define the product categories we want:
     product_categories = {
         "Apparel": "apparel",
         "Coat": "women coats",
@@ -169,7 +165,7 @@ def search_products_simple(scanned_style, preference, budget):
         if len(prods) > 3:
             prods = prods[:3]
         category_products[cat] = prods
-    
+
     min_count = min(len(v) for v in category_products.values())
     if min_count == 0:
         return []
@@ -213,12 +209,30 @@ def retrieve_selection(user_id):
     return [json.loads(r[0]) for r in rows]
 
 # -----------------------------------------------------------------------------
+# Cart Functions
+# -----------------------------------------------------------------------------
+def init_cart():
+    """Initialize a cart in session state if not already present."""
+    if "cart" not in st.session_state:
+        st.session_state["cart"] = []
+
+def add_to_cart(item: dict):
+    """Add a product item (name, price, link) to the session-based cart."""
+    st.session_state["cart"].append(item)
+
+def clear_cart():
+    """Clear the cart."""
+    st.session_state["cart"] = []
+
+# -----------------------------------------------------------------------------
 # Streamlit Interface
 # -----------------------------------------------------------------------------
 st.title("Fashion Designer Agent")
 st.write("Curate your wardrobe for any occasion using our multi-agent system.")
 
-menu = st.sidebar.radio("Navigation", ["Upload Photos", "Event Preferences", "Recommendations", "Saved Selections", "Show document.json"])
+init_cart()  # Initialize the cart
+
+menu = st.sidebar.radio("Navigation", ["Upload Photos", "Event Preferences", "Recommendations", "Saved Selections", "Show document.json", "Cart"])
 
 if menu == "Upload Photos":
     st.header("Step 1: Upload Your Photos")
@@ -244,48 +258,38 @@ elif menu == "Event Preferences":
 
 elif menu == "Recommendations":
     st.header("Step 3: Wardrobe Recommendations")
-    try:
-        # We only want to show the categories "Apparel", "Coat", "Shoes", and "Tie" from document.json
-        with open("document.json", "r") as f:
-            data = json.load(f)
-        
-        # Convert keys to a list so we can skip the first 4 and the last one
-        # If your JSON's first 4 keys are always 'success', 'data', 'status', 'expiresAt', etc.
-        # and the last key is extraneous, this will skip them.
-        all_keys = list(data.keys())
-        # Ensure we have enough keys before slicing
-        if len(all_keys) > 5:
-            # Skip the first 4 and the last 1
-            relevant_keys = all_keys[4:-1]
+    if "scanned_style" not in st.session_state:
+        st.error("Please complete 'Upload Photos' first.")
+    elif "preference" not in st.session_state or "budget" not in st.session_state:
+        st.error("Please complete 'Event Preferences' first.")
+    else:
+        style = st.session_state["scanned_style"]
+        pref = st.session_state["preference"]
+        bud = st.session_state["budget"]
+        sets = search_products_simple(style, pref, bud)
+        if not sets:
+            st.warning("No complete wardrobe sets could be formed. Please try refining your style or preferences.")
         else:
-            # If there aren't enough keys, just use them as is
-            relevant_keys = all_keys
-        
-        for category in relevant_keys:
-            st.subheader(f"Category: {category}")
-            content = data[category]
-            # If the content is in the expected format, display top 3
-            if isinstance(content, dict) and "data" in content and "products" in content["data"]:
-                products = content["data"]["products"]
-                for idx, prod in enumerate(products[:3]):
-                    st.write(f"**Recommendation {idx+1}:**")
-                    st.write(f"- Name: {prod.get('name', 'N/A')}")
-                    st.write(f"- Price: {prod.get('price', 'N/A')}")
-                    st.write(f"- Link: {prod.get('link', 'N/A')}")
-                    st.markdown("---")
-            else:
-                st.write(f"Data for {category} is not in expected format: {content}")
-    except Exception as e:
-        st.error(f"Error reading document.json: {e}")
-    
-    # "Save All Selections" is optional here if you'd like to store sets
-    if st.button("Save All Selections"):
-        user_id = "user_1"  # Replace with proper authentication in production
-        # If you want to store sets from the code, you can re-run search_products_simple or store them
-        # For now, we'll just store an empty placeholder
-        empty_sets = []
-        save_selection(user_id, empty_sets)
-        st.success("Selections saved!")
+            st.session_state["recommendations"] = sets
+            for outfit in sets:
+                st.subheader(outfit["set_name"])
+                st.write(outfit["summary"])
+                st.write("**Items Included:**")
+                for it in outfit["items"]:
+                    st.write(f"- **{it['item']}**: {it['name']} | Price: {it['price']}")
+                    st.markdown(f"[Buy Now]({it['link']})")
+                    # Add "Add to Cart" button for each item
+                    if st.button(f"Add {it['name']} to Cart", key=f"{outfit['set_name']}_{it['item']}"):
+                        add_to_cart({
+                            "name": it["name"],
+                            "price": it["price"],
+                            "link": it["link"]
+                        })
+                st.markdown("---")
+            if st.button("Save All Selections"):
+                user_id = "user_1"  # Replace with proper authentication in production
+                save_selection(user_id, sets)
+                st.success("Selections saved!")
 
 elif menu == "Saved Selections":
     st.header("Your Saved Wardrobe Selections")
@@ -303,17 +307,41 @@ elif menu == "Show document.json":
     try:
         with open("document.json", "r") as f:
             data = json.load(f)
-        for category, content in data.items():
-            st.subheader(f"Category: {category}")
-            if isinstance(content, dict) and "data" in content and "products" in content["data"]:
-                products = content["data"]["products"]
-                for idx, prod in enumerate(products[:3]):
-                    st.write(f"**Recommendation {idx+1}:**")
-                    st.write(f"- Name: {prod.get('name', 'N/A')}")
-                    st.write(f"- Price: {prod.get('price', 'N/A')}")
-                    st.write(f"- Link: {prod.get('link', 'N/A')}")
-                    st.markdown("---")
+        # Directly iterate over the categories we care about
+        categories_to_show = ["apparel", "women coats", "women shoes", "women tie"]
+        for cat in categories_to_show:
+            st.subheader(f"Category: {cat}")
+            if cat in data:
+                content = data[cat]
+                # Check for expected format: either directly a products list or nested under "data"
+                if isinstance(content, dict):
+                    if "data" in content and "products" in content["data"]:
+                        products = content["data"]["products"]
+                    elif "products" in content:
+                        products = content["products"]
+                    else:
+                        products = []
+                    for idx, prod in enumerate(products[:3]):
+                        st.write(f"**Recommendation {idx+1}:**")
+                        st.write(f"- Name: {prod.get('name', 'N/A')}")
+                        st.write(f"- Price: {prod.get('price', 'N/A')}")
+                        st.write(f"- Link: {prod.get('link', 'N/A')}")
+                        st.markdown("---")
+                else:
+                    st.write(f"Data for {cat} is not in expected format: {content}")
             else:
-                st.write(f"Data for {category} is not in expected format: {content}")
+                st.write(f"No data found for category: {cat}")
     except Exception as e:
         st.error(f"Error reading document.json: {e}")
+
+elif menu == "Cart":
+    st.header("Your Cart")
+    if st.session_state["cart"]:
+        for idx, item in enumerate(st.session_state["cart"]):
+            st.write(f"**Item {idx+1}:** {item['name']} | Price: {item['price']}")
+            st.markdown(f"[Buy Now Link]({item['link']})")
+        if st.button("Clear Cart"):
+            clear_cart()
+            st.success("Cart cleared.")
+    else:
+        st.info("Your cart is empty.")
