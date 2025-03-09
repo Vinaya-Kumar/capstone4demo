@@ -94,7 +94,7 @@ def collect_preferences():
     return specific_pref, budget
 
 # -----------------------------------------------------------------------------
-# Firecrawl-based Product Extraction
+# Firecrawl-based Product Extraction using Firecrawl Scrape Endpoint
 # -----------------------------------------------------------------------------
 def get_products(category: str, style: str) -> List[dict]:
     """
@@ -151,7 +151,6 @@ def search_products_simple(scanned_style, preference, budget):
     to extract up to 3 product recommendations. Then, construct complete wardrobe sets by combining
     the i-th product from each category. Returns a list of complete wardrobe sets.
     """
-    # Define the product categories we want:
     product_categories = {
         "Apparel": "apparel",
         "Coat": "women coats",
@@ -307,7 +306,7 @@ elif menu == "Show document.json":
     try:
         with open("document.json", "r") as f:
             data = json.load(f)
-        # Directly iterate over the categories we care about
+        # Directly iterate over the fixed categories we expect
         categories_to_show = ["apparel", "women coats", "women shoes", "women tie"]
         for cat in categories_to_show:
             st.subheader(f"Category: {cat}")
